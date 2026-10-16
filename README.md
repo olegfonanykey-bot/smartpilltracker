@@ -1,2 +1,2 @@
-# Pilul
+# smartpilltracker
 Tabletki
