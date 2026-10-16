@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'smartPillTracker_v1';
+  const STORAGE_KEY = 'smartPillTracker_v2';
   const RULES = {
     empty: 'Натщесерце',
     before: 'До їди',
@@ -23,8 +23,8 @@
 
   const $ = (sel) => document.querySelector(sel);
 
-  document.addEventListener('DOMContentLoaded', () => {
-    registerServiceWorker();
+  document.addEventListener('DOMContentLoaded', async () => {
+    await registerServiceWorker();
     render();
     setupEventListeners();
     requestNotificationPermissionOnDemand();
@@ -33,8 +33,12 @@
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('message', handleSWMessage);
     }
+
+    // Важливо для Android — реєструємо періодичну перевірку
+    registerPeriodicSync();
   });
 
+  // ========== State ==========
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -57,12 +61,16 @@
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
   }
 
+  // ========== Service Worker ==========
   async function registerServiceWorker() {
-    if (!('serviceWorker' in navigator)) return;
+    if (!('serviceWorker' in navigator)) return null;
     try {
-      await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      const reg = await navigator.serviceWorker.register('./sw.js', { scope: './' });
+      console.log('[SW] registered');
+      return reg;
     } catch (err) {
-      console.warn('[SW] failed', err);
+      console.warn('[SW] registration failed', err);
+      return null;
     }
   }
 
@@ -72,7 +80,9 @@
       if (action === 'taken') markTaken(medId);
       else if (action === 'snooze') snoozeMed(medId);
     }
-    if (type === 'REQUEST_MEDS_CHECK') sendMedsToSW();
+    if (type === 'REQUEST_MEDS_CHECK') {
+      sendMedsToSW();
+    }
   }
 
   function sendMedsToSW() {
@@ -86,9 +96,13 @@
       takenToday: isTakenToday(m),
       snoozeUntil: m.snoozeUntil || null
     }));
-    navigator.serviceWorker.controller.postMessage({ type: 'CHECK_DUE_MEDS', meds: medsForSW });
+    navigator.serviceWorker.controller.postMessage({
+      type: 'CHECK_DUE_MEDS',
+      meds: medsForSW
+    });
   }
 
+  // ========== Notifications ==========
   async function requestNotificationPermissionOnDemand() {
     if (!('Notification' in window)) return;
     const banner = $('#permission-banner');
@@ -110,41 +124,84 @@
       showToast('Сповіщення не підтримуються');
       return;
     }
+
     const perm = await Notification.requestPermission();
     if (perm === 'granted') {
       state.notificationsEnabled = true;
       saveState();
       $('#permission-banner')?.classList.remove('visible');
       showToast('Сповіщення увімкнено 🔔');
+
+      // Тестове сповіщення одразу
+      setTimeout(() => {
+        showTestNotification();
+      }, 1000);
+
       scheduleAllNotifications();
-      try {
-        const reg = await navigator.serviceWorker.ready;
-        if ('periodicSync' in reg) {
-          await reg.periodicSync.register('check-meds', { minInterval: 15 * 60 * 1000 });
-        }
-      } catch (_) {}
+      registerPeriodicSync();
     } else {
-      showToast('Дозвіл відхилено');
+      showToast('Дозвіл відхилено. Увімкни в налаштуваннях Chrome');
+    }
+  }
+
+  function showTestNotification() {
+    if (Notification.permission !== 'granted') return;
+    if (navigator.serviceWorker?.controller) {
+      navigator.serviceWorker.controller.postMessage({
+        type: 'SHOW_NOTIFICATION',
+        title: '✅ Сповіщення працюють!',
+        body: 'Тепер ти будеш отримувати нагадування про ліки',
+        tag: 'test-notification'
+      });
+    } else {
+      new Notification('✅ Сповіщення працюють!', {
+        body: 'Тепер ти будеш отримувати нагадування про ліки'
+      });
+    }
+  }
+
+  async function registerPeriodicSync() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if ('periodicSync' in reg) {
+        const status = await navigator.permissions.query({
+          name: 'periodic-background-sync'
+        });
+        if (status.state === 'granted') {
+          await reg.periodicSync.register('check-meds', {
+            minInterval: 15 * 60 * 1000 // 15 хвилин
+          });
+          console.log('[PeriodicSync] registered');
+        }
+      }
+    } catch (e) {
+      console.log('[PeriodicSync] not available', e);
     }
   }
 
   function startNotificationScheduler() {
+    // Перевіряємо кожні 20 секунд, поки додаток відкритий
     if (notificationCheckInterval) clearInterval(notificationCheckInterval);
     notificationCheckInterval = setInterval(() => {
       checkDueAndNotify();
       sendMedsToSW();
-    }, 30000);
+    }, 20000);
+
     scheduleAllNotifications();
   }
 
   function scheduleAllNotifications() {
+    // Очищаємо старі таймери
     scheduledTimeouts.forEach((id) => clearTimeout(id));
     scheduledTimeouts.clear();
+
     if (Notification.permission !== 'granted') return;
 
     const now = Date.now();
+
     state.meds.forEach((med) => {
       if (isTakenToday(med)) return;
+
       let targetTime;
       if (med.snoozeUntil) {
         targetTime = new Date(med.snoozeUntil).getTime();
@@ -154,41 +211,59 @@
         d.setHours(h, m, 0, 0);
         targetTime = d.getTime();
       }
+
       const delay = targetTime - now;
+
+      // Плануємо, якщо час у майбутньому (до 24 годин)
       if (delay > 0 && delay < 24 * 60 * 60 * 1000) {
         const tid = setTimeout(() => {
           showPillNotification(med);
           scheduledTimeouts.delete(med.id);
         }, delay);
         scheduledTimeouts.set(med.id, tid);
-      } else if (delay <= 0 && delay > -2 * 60 * 1000) {
+      }
+
+      // Якщо час вже настав (до 3 хвилин тому) — показуємо одразу
+      if (delay <= 0 && delay > -3 * 60 * 1000) {
         showPillNotification(med);
       }
     });
   }
 
   function showPillNotification(med) {
-    if (Notification.permission !== 'granted' || isTakenToday(med)) return;
+    if (Notification.permission !== 'granted') return;
+    if (isTakenToday(med)) return;
+
     const title = `💊 Час прийняти: ${med.name}`;
     const body = `${RULES[med.rule] || med.rule} • ${med.time}`;
 
+    // Через Service Worker (краще для фону)
     if (navigator.serviceWorker?.controller) {
       navigator.serviceWorker.controller.postMessage({
         type: 'SHOW_NOTIFICATION',
-        title, body,
+        title,
+        body,
         tag: `pill-${med.id}`,
         data: { medId: med.id }
       });
     } else {
-      new Notification(title, { body, tag: `pill-${med.id}`, requireInteraction: true });
+      // Запасний варіант
+      new Notification(title, {
+        body,
+        tag: `pill-${med.id}`,
+        requireInteraction: true,
+        vibrate: [300, 100, 300]
+      });
     }
   }
 
   function checkDueAndNotify() {
     const now = new Date();
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
     state.meds.forEach((med) => {
       if (isTakenToday(med)) return;
+
       let targetMinutes;
       if (med.snoozeUntil) {
         const s = new Date(med.snoozeUntil);
@@ -198,11 +273,15 @@
         const [h, m] = med.time.split(':').map(Number);
         targetMinutes = h * 60 + m;
       }
+
       const diff = currentMinutes - targetMinutes;
-      if (diff >= 0 && diff <= 1) showPillNotification(med);
+      if (diff >= 0 && diff <= 2) {
+        showPillNotification(med);
+      }
     });
   }
 
+  // ========== Business Logic ==========
   function isTakenToday(med) {
     return med.takenDate === todayKey();
   }
@@ -342,6 +421,7 @@
     } catch (_) {}
   }
 
+  // ========== Render ==========
   function render() {
     updateDailyHistory();
     renderStats();
@@ -362,17 +442,26 @@
   function renderTodayList() {
     const list = $('#meds-list');
     const todayMeds = getTodayMeds();
+
     if (todayMeds.length === 0) {
-      list.innerHTML = `<div class="empty-state"><div class="emoji">💊</div><p>Немає препаратів на сьогодні</p><p style="font-size:0.85rem;margin-top:8px">Натисніть + щоб додати</p></div>`;
+      list.innerHTML = `
+        <div class="empty-state">
+          <div class="emoji">💊</div>
+          <p>Немає препаратів на сьогодні</p>
+          <p style="font-size:0.85rem;margin-top:8px">Натисніть + щоб додати</p>
+        </div>`;
       return;
     }
+
     const now = new Date();
     const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
     list.innerHTML = todayMeds.map((med) => {
       const taken = isTakenToday(med);
       const courseDay = getCourseDay(med);
       let displayTime = med.time;
       let isOverdue = false;
+
       if (med.snoozeUntil) {
         const s = new Date(med.snoozeUntil);
         displayTime = s.toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
@@ -381,6 +470,7 @@
         const [h, m] = med.time.split(':').map(Number);
         if (!taken && currentMinutes > h * 60 + m + 5) isOverdue = true;
       }
+
       return `
         <article class="med-card ${taken ? 'taken' : ''} ${isOverdue ? 'overdue' : ''}" data-id="${med.id}">
           <div class="med-top">
@@ -390,7 +480,9 @@
           <div class="med-meta">
             <span class="badge rule">${RULES[med.rule] || med.rule}</span>
             ${courseDay && med.durationDays ? `<span class="badge day">День ${courseDay} з ${med.durationDays}</span>` : ''}
-            <span class="badge ${taken ? 'status-taken' : 'status-pending'}">${taken ? '✓ Випито' : isOverdue ? 'Пропущено' : 'Очікує'}</span>
+            <span class="badge ${taken ? 'status-taken' : 'status-pending'}">
+              ${taken ? '✓ Випито' : isOverdue ? 'Пропущено' : 'Очікує'}
+            </span>
           </div>
           <div class="med-actions">
             <button class="btn btn-primary" data-action="taken" ${taken ? 'disabled' : ''}>✅ Випити</button>
@@ -404,12 +496,19 @@
   function renderPermissionBanner() {
     const banner = $('#permission-banner');
     if (!banner) return;
-    if (Notification.permission === 'default') banner.classList.add('visible');
-    else banner.classList.remove('visible');
+    if (Notification.permission === 'default') {
+      banner.classList.add('visible');
+    } else {
+      banner.classList.remove('visible');
+    }
   }
 
   function escapeHtml(str) {
-    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
   function showToast(msg) {
@@ -426,13 +525,23 @@
     toast._tid = setTimeout(() => toast.classList.remove('show'), 2500);
   }
 
-  function openModal() { $('#add-modal').classList.add('open'); $('#med-name').focus(); }
-  function closeModal() { $('#add-modal').classList.remove('open'); $('#add-form').reset(); }
+  function openModal() {
+    $('#add-modal').classList.add('open');
+    $('#med-name').focus();
+  }
 
+  function closeModal() {
+    $('#add-modal').classList.remove('open');
+    $('#add-form').reset();
+  }
+
+  // ========== Events ==========
   function setupEventListeners() {
     $('#fab-add').addEventListener('click', openModal);
     $('#close-modal').addEventListener('click', closeModal);
-    $('#add-modal').addEventListener('click', (e) => { if (e.target === $('#add-modal')) closeModal(); });
+    $('#add-modal').addEventListener('click', (e) => {
+      if (e.target === $('#add-modal')) closeModal();
+    });
 
     $('#add-form').addEventListener('submit', (e) => {
       e.preventDefault();
@@ -440,7 +549,10 @@
       const time = $('#med-time').value;
       const rule = $('#med-rule').value;
       const durationDays = $('#med-duration').value;
-      if (!name || !time) { showToast('Заповніть назву та час'); return; }
+      if (!name || !time) {
+        showToast('Заповніть назву та час');
+        return;
+      }
       addMed({ name, time, rule, durationDays });
       closeModal();
     });
@@ -459,10 +571,12 @@
       else if (action === 'delete') deleteMed(id);
     });
 
+    // Коли повертаємось в додаток — одразу перевіряємо
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         scheduleAllNotifications();
         checkDueAndNotify();
+        sendMedsToSW();
         render();
       }
     });
