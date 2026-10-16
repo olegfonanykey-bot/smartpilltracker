@@ -1,1 +1,81 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#8b5cf6" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="description" content="Smart Pill Tracker — нагадування про прийом ліків та відстеження курсів лікування" />
+  <title>Smart Pill Tracker</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%238b5cf6' width='100' height='100' rx='20'/><text y='.9em' x='50%' text-anchor='middle' font-size='60'>💊</text></svg>" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect fill='%238b5cf6' width='100' height='100' rx='20'/><text y='.9em' x='50%' text-anchor='middle' font-size='60'>💊</text></svg>" />
+</head>
+<body>
+  <header class="header">
+    <h1>💊 Smart Pill Tracker</h1>
+  </header>
 
+  <div id="permission-banner" class="permission-banner">
+    <p>🔔 Увімкніть сповіщення, щоб отримувати нагадування навіть коли додаток закритий.</p>
+    <button id="btn-enable-notifications" class="btn btn-primary">Дозволити сповіщення</button>
+  </div>
+
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">Серія днів</div>
+      <div class="stat-value streak" id="stat-streak">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Сьогодні</div>
+      <div class="stat-value" id="stat-percent">0%</div>
+    </div>
+  </div>
+
+  <div class="section-title"><span>Сьогодні</span></div>
+  <div id="meds-list" class="meds-list"></div>
+
+  <button id="fab-add" class="fab" aria-label="Додати препарат">+</button>
+
+  <div id="add-modal" class="modal-overlay">
+    <div class="modal">
+      <h2>
+        Новий препарат
+        <button type="button" class="close-modal" id="close-modal" aria-label="Закрити">×</button>
+      </h2>
+      <form id="add-form">
+        <div class="form-group">
+          <label for="med-name">Назва препарату</label>
+          <input type="text" id="med-name" placeholder="Напр. Аспірин, Вітамін D" required autocomplete="off" />
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label for="med-time">Час прийому</label>
+            <input type="time" id="med-time" required />
+          </div>
+          <div class="form-group">
+            <label for="med-duration">Курс (днів)</label>
+            <input type="number" id="med-duration" min="0" max="365" placeholder="0 = безстроково" value="7" />
+          </div>
+        </div>
+        <div class="form-group">
+          <label for="med-rule">Правило прийому</label>
+          <select id="med-rule">
+            <option value="empty">Натщесерце</option>
+            <option value="before">До їди</option>
+            <option value="after">Після їди</option>
+            <option value="with">Під час їди</option>
+            <option value="anytime">Незалежно від їди</option>
+          </select>
+        </div>
+        <button type="submit" class="btn-submit">Додати препарат</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="./app.js"></script>
+</body>
+</html>
